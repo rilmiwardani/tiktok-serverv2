@@ -6,114 +6,97 @@ import { Server as SocketIOServer } from "socket.io";
 import { WebcastPushConnection } from "tiktok-live-connector";
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-
 const server = http.createServer(app);
 const io = new SocketIOServer(server, { cors: { origin: "*" } });
 
-// =======================================================
-// CONFIG
-// =======================================================
-let activeConnection = null;
-let currentUsername = null;
+app.use(cors());
+app.use(express.json());
 
-// Buffer untuk batching komentar
-let chatBuffer = [];
-let lastEmit = 0;
-const EMIT_INTERVAL = 100; // ms
+const PORT = process.env.PORT || 3000;
+let tiktokConnection = null;
+let currentUser = null;
 
-// =======================================================
-// HELPER FUNCTIONS
-// =======================================================
+// ==============================
+// FUNGSI KONEKSI TIKTOK
+// ==============================
+async function connectTikTok(username, socket) {
+  try {
+    if (tiktokConnection) {
+      await tiktokConnection.disconnect();
+      tiktokConnection = null;
+    }
 
-function emitBufferedChats() {
-  const now = Date.now();
-  if (now - lastEmit >= EMIT_INTERVAL && chatBuffer.length > 0) {
-    io.emit("tiktokBatch", chatBuffer.splice(0));
-    lastEmit = now;
-  }
-}
+    console.log(`🔗 Connecting to TikTok live @${username}...`);
 
-function reconnectTikTok(uniqueId, options, socket) {
-  if (activeConnection) {
-    activeConnection.disconnect();
-    activeConnection = null;
-  }
-
-  const tiktok = new WebcastPushConnection(uniqueId, options);
-  activeConnection = tiktok;
-
-  tiktok
-    .connect()
-    .then((state) => {
-      console.log(`✅ Connected to @${uniqueId} | RoomID: ${state.roomId}`);
-      socket.emit("tiktokConnected", state);
-    })
-    .catch((err) => {
-      console.error("❌ Failed to connect:", err.message);
-      socket.emit("tiktokDisconnected", err.message);
+    const connection = new WebcastPushConnection(username, {
+      enableExtendedGiftInfo: true,
+      requestPolling: true, // stabil di Railway
+      requestOptions: { timeout: 15000 },
     });
 
-  // ===================== TikTok Event Listeners =====================
-  tiktok.on("chat", (data) => {
-    const text = (data.comment || "").trim().toUpperCase();
+    const state = await connection.connect();
+    tiktokConnection = connection;
+    currentUser = username;
 
-    // Hanya ambil komentar 5 huruf untuk game Wordle
-    if (/^[A-Z]{5}$/.test(text)) {
-      chatBuffer.push({
-        type: "guess",
-        user: data.uniqueId,
-        nickname: data.nickname,
-        pfp: data.profilePictureUrl,
-        guess: text,
-      });
-      emitBufferedChats();
-    }
-  });
+    console.log(`✅ Connected to roomId ${state.roomId} (${username})`);
+    socket.emit("tiktokConnected", state);
 
-  tiktok.on("like", (data) => {
-    io.emit("like", data);
-  });
+    // ==============================
+    // EVENT HANDLER
+    // ==============================
 
-  tiktok.on("member", (data) => {
-    io.emit("member", data);
-  });
+    // Chat → hanya komentar 5 huruf dari follower
+    connection.on("chat", (data) => {
+      const text = (data.comment || "").trim().toUpperCase();
+      const isFollower = data.isFollower === true; // properti dari connector
 
-  tiktok.on("social", (data) => {
-    io.emit("social", data);
-  });
+      if (/^[A-Z]{5}$/.test(text) && isFollower) {
+        io.emit("tiktokBatch", [
+          {
+            type: "guess",
+            user: data.uniqueId,
+            nickname: data.nickname,
+            guess: text,
+            pfp: data.profilePictureUrl,
+            follower: isFollower,
+          },
+        ]);
+        console.log(`💬 [Follower] ${data.nickname}: ${text}`);
+      } else if (/^[A-Z]{5}$/.test(text)) {
+        console.log(`💬 [Non-follower ignored] ${data.nickname}: ${text}`);
+      }
+    });
 
-  tiktok.on("gift", (data) => {
-    io.emit("gift", data);
-  });
+    connection.on("gift", (data) => io.emit("gift", data));
+    connection.on("like", (data) => io.emit("like", data));
+    connection.on("member", (data) => io.emit("member", data));
 
-  tiktok.on("roomUser", (data) => {
-    io.emit("roomUser", data);
-  });
+    connection.on("disconnected", () => {
+      console.warn("⚠️ Disconnected. Reconnecting in 5s...");
+      setTimeout(() => connectTikTok(username, socket), 5000);
+    });
 
-  tiktok.on("streamEnd", () => {
-    console.warn("⚠️ Stream ended");
-    socket.emit("streamEnd");
-  });
-
-  tiktok.on("disconnected", () => {
-    console.warn("⚠️ Disconnected, attempting reconnect...");
-    socket.emit("tiktokDisconnected", "Connection lost, retrying...");
-    setTimeout(() => reconnectTikTok(uniqueId, options, socket), 5000);
-  });
+    connection.on("streamEnd", () => {
+      console.warn("🔴 Stream ended.");
+      socket.emit("streamEnd");
+    });
+  } catch (err) {
+    console.error("❌ Failed to connect:", err.message);
+    socket.emit("tiktokDisconnected", err.message);
+    setTimeout(() => connectTikTok(username, socket), 10000);
+  }
 }
 
-// =======================================================
+// ==============================
 // SOCKET.IO HANDLER
-// =======================================================
+// ==============================
 io.on("connection", (socket) => {
   console.log("Frontend connected:", socket.id);
 
-  socket.on("setUniqueId", (uniqueId, options = {}) => {
+  socket.on("setUniqueId", (uniqueId) => {
     if (!uniqueId) return;
-    currentUsername = uniqueId.replace(/^@/, "");
-    reconnectTikTok(currentUsername, options, socket);
+    const username = uniqueId.replace(/^@/, "");
+    connectTikTok(username, socket);
   });
 
   socket.on("disconnect", () => {
@@ -121,21 +104,14 @@ io.on("connection", (socket) => {
   });
 });
 
-// =======================================================
-// EXPRESS ENDPOINTS
-// =======================================================
+// ==============================
 app.get("/", (req, res) => {
   res.json({
     status: "TikTok backend aktif",
-    listening: !!activeConnection,
-    username: currentUsername || null,
+    username: currentUser || null,
   });
 });
 
-// =======================================================
-// START SERVER
-// =======================================================
-const PORT = process.env.PORT || 3000;
 server.listen(PORT, () =>
-  console.log(`🚀 Server berjalan di port ${PORT}`)
+  console.log(`🚀 Server running on port ${PORT}`)
 );
