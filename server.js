@@ -1,4 +1,5 @@
-// server.js
+// server-railway-compatible.js
+// Versi server.js yang disempurnakan agar kompatibel penuh dengan frontend
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -26,7 +27,7 @@ async function connectTikTok(username, socket) {
       tiktokConnection = null;
     }
 
-    console.log(`🔗 Connecting to TikTok live @${username}...`);
+    console.log(`🔗 Menghubungkan ke TikTok live @${username}...`);
 
     const connection = new WebcastPushConnection(username, {
       enableExtendedGiftInfo: true,
@@ -38,52 +39,130 @@ async function connectTikTok(username, socket) {
     tiktokConnection = connection;
     currentUser = username;
 
-    console.log(`✅ Connected to roomId ${state.roomId} (${username})`);
-    socket.emit("tiktokConnected", state);
+    // [DIUBAH] Sertakan uniqueId dalam state yang dikirim ke klien
+    const clientState = { ...state, uniqueId: username };
+    console.log(`✅ Terhubung ke roomId ${state.roomId} (${username})`);
+    socket.emit("tiktokConnected", clientState);
 
     // ==============================
-    // EVENT HANDLER
+    // EVENT HANDLER (DIUBAH UNTUK BATCHING)
     // ==============================
 
-    // Chat → hanya komentar 5 huruf dari follower
+    // Fungsi helper untuk menyatukan data user
+    const formatUserData = (data) => ({
+      userId: data.userId || data.uniqueId,
+      nickname: data.nickname,
+      profilePictureUrl: data.profilePictureUrl,
+      ...data, // Sertakan sisa data
+    });
+
+    // Chat → memproses tebakan, !win, dan obrolan biasa
     connection.on("chat", (data) => {
-      const text = (data.comment || "").trim().toUpperCase();
-      const isFollower = data.isFollower === true; // properti dari connector
+      const text = (data.comment || "").trim();
+      const textUpper = text.toUpperCase();
+      const isFollower = data.isFollower === true;
+      const userData = formatUserData(data);
 
-      if (/^[A-Z]{5}$/.test(text) && isFollower) {
+      if (/^!WIN$/i.test(text)) {
+        // [BARU] Menangani !win
+        io.emit("tiktokBatch", [
+          {
+            type: "winCheck",
+            ...userData,
+          },
+        ]);
+        console.log(`🏆 [!win] Dijalankan oleh ${data.nickname}`);
+      } else if (/^[A-Z]{5}$/.test(textUpper) && isFollower) {
+        // [DIUBAH] Tetap menangani tebakan 5 huruf dari follower
         io.emit("tiktokBatch", [
           {
             type: "guess",
-            user: data.uniqueId,
-            nickname: data.nickname,
-            guess: text,
-            pfp: data.profilePictureUrl,
+            guess: textUpper,
             follower: isFollower,
+            ...userData,
           },
         ]);
-        console.log(`💬 [Follower] ${data.nickname}: ${text}`);
-      } else if (/^[A-Z]{5}$/.test(text)) {
-        console.log(`💬 [Non-follower ignored] ${data.nickname}: ${text}`);
+        console.log(`💬 [Tebakan] ${data.nickname}: ${textUpper}`);
+      } else if (/^[A-Z]{5}$/.test(textUpper)) {
+        console.log(`💬 [Tebakan Non-Follower Diabaikan] ${data.nickname}: ${textUpper}`);
+        // [BARU] Kirim obrolan biasa agar muncul di chatbox
+        io.emit("tiktokBatch", [
+          {
+            type: "chat",
+            comment: text,
+            ...userData,
+          },
+        ]);
+      } else {
+        // [BARU] Kirim obrolan biasa agar muncul di chatbox
+        io.emit("tiktokBatch", [
+          {
+            type: "chat",
+            comment: text,
+            ...userData,
+          },
+        ]);
       }
     });
 
-    connection.on("gift", (data) => io.emit("gift", data));
-    connection.on("like", (data) => io.emit("like", data));
-    connection.on("member", (data) => io.emit("member", data));
+    // [DIUBAH] Kirim 'like' sebagai batch
+    connection.on("like", (data) =>
+      io.emit("tiktokBatch", [
+        {
+          type: "like",
+          ...formatUserData(data),
+        },
+      ])
+    );
+
+    // [DIUBAH] Kirim 'member' (join) sebagai batch
+    connection.on("member", (data) =>
+      io.emit("tiktokBatch", [
+        {
+          type: "member",
+          ...formatUserData(data),
+        },
+      ])
+    );
+
+    // [BARU] Kirim 'social' (follow/share) sebagai batch
+    connection.on("social", (data) =>
+      io.emit("tiktokBatch", [
+        {
+          type: "social",
+          ...formatUserData(data),
+        },
+      ])
+    );
+
+    // [BARU] Kirim 'roomUser' (viewer count) sebagai batch
+    connection.on("roomUser", (data) =>
+      io.emit("tiktokBatch", [
+        {
+          type: "roomUser",
+          ...formatUserData(data),
+        },
+      ])
+    );
+    
+    // [TIDAK BERUBAH] Gift masih bisa dikirim mentah jika frontend menanganinya
+    // Jika frontend HANYA menangani tiktokBatch, ubah ini juga
+    connection.on("gift", (data) => io.emit("gift", data)); // Frontend ini tidak menangani gift, jadi biarkan
 
     connection.on("disconnected", () => {
-      console.warn("⚠️ Disconnected. Reconnecting in 5s...");
+      console.warn("⚠️ Terputus. Menghubungkan ulang dalam 5 detik...");
+      socket.emit("tiktokDisconnected", "Koneksi terputus, mencoba lagi...");
       setTimeout(() => connectTikTok(username, socket), 5000);
     });
 
     connection.on("streamEnd", () => {
-      console.warn("🔴 Stream ended.");
+      console.warn("🔴 LIVE berakhir.");
       socket.emit("streamEnd");
     });
   } catch (err) {
-    console.error("❌ Failed to connect:", err.message);
+    console.error("❌ Gagal terhubung:", err.message);
     socket.emit("tiktokDisconnected", err.message);
-    setTimeout(() => connectTikTok(username, socket), 10000);
+    // Tidak perlu rekoneksi otomatis di sini jika gagal, biarkan user mencoba lagi
   }
 }
 
@@ -91,16 +170,19 @@ async function connectTikTok(username, socket) {
 // SOCKET.IO HANDLER
 // ==============================
 io.on("connection", (socket) => {
-  console.log("Frontend connected:", socket.id);
+  console.log("Frontend terhubung:", socket.id);
 
   socket.on("setUniqueId", (uniqueId) => {
-    if (!uniqueId) return;
+    if (!uniqueId) {
+        socket.emit("tiktokDisconnected", "UniqueId tidak valid");
+        return;
+    }
     const username = uniqueId.replace(/^@/, "");
     connectTikTok(username, socket);
   });
 
   socket.on("disconnect", () => {
-    console.log("Frontend disconnected:", socket.id);
+    console.log("Frontend terputus:", socket.id);
   });
 });
 
@@ -108,10 +190,10 @@ io.on("connection", (socket) => {
 app.get("/", (req, res) => {
   res.json({
     status: "TikTok backend aktif",
-    username: currentUser || null,
+    username: currentUser || "Belum terhubung",
   });
 });
 
 server.listen(PORT, () =>
-  console.log(`🚀 Server running on port ${PORT}`)
+  console.log(`🚀 Server berjalan di port ${PORT}`)
 );
