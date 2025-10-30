@@ -45,7 +45,7 @@ async function connectTikTok(username, socket) {
     socket.emit("tiktokConnected", clientState);
 
     // ==============================
-    // EVENT HANDLER (DIUBAH UNTUK BATCHING)
+    // EVENT HANDLER (DIUBAH UNTU BATCHING)
     // ==============================
 
     // Fungsi helper untuk menyatukan data user
@@ -71,9 +71,9 @@ async function connectTikTok(username, socket) {
             type: "winCheck",
             ...userData,
           },
-            },
-          ]);
-          console.log(`🏆 [!win] Dijalankan oleh ${data.nickname}`);
+          // [FIX] Kurung kurawal ekstra dihapus dari sini
+        ]);
+        console.log(`🏆 [!win] Dijalankan oleh ${data.nickname}`);
       } else if (/^[A-Z]{5}$/.test(textUpper)) { // [DIUBAH] Kondisi '&& isFollower' dihapus
         // [DIUBAH] Menangani tebakan 5 huruf DARI SIAPA SAJA
         io.emit("tiktokBatch", [
@@ -94,16 +94,8 @@ async function connectTikTok(username, socket) {
             ...userData,
           },
         ]);
-      } else {
-        // [BARU] Kirim obrolan biasa agar muncul di chatbox
-        io.emit("tiktokBatch", [
-          {
-            type: "chat",
-            comment: text,
-            ...userData,
-          },
-        ]);
       }
+      // [FIX] Blok 'else' duplikat dihapus dari sini
     });
 
     // [DIUBAH] Kirim 'like' sebagai batch
@@ -198,4 +190,3 @@ app.get("/", (req, res) => {
 server.listen(PORT, () =>
   console.log(`🚀 Server berjalan di port ${PORT}`)
 );
-
