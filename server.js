@@ -60,7 +60,8 @@ async function connectTikTok(username, socket) {
     connection.on("chat", (data) => {
       const text = (data.comment || "").trim();
       const textUpper = text.toUpperCase();
-      const isFollower = data.isFollower === true;
+      // [DIHAPUS] Filter follower tidak lagi diperlukan
+      // const isFollower = data.isFollower === true;
       const userData = formatUserData(data);
 
       if (/^!WIN$/i.test(text)) {
@@ -70,21 +71,21 @@ async function connectTikTok(username, socket) {
             type: "winCheck",
             ...userData,
           },
-        ]);
-        console.log(`🏆 [!win] Dijalankan oleh ${data.nickname}`);
-      } else if (/^[A-Z]{5}$/.test(textUpper) && isFollower) {
-        // [DIUBAH] Tetap menangani tebakan 5 huruf dari follower
+            },
+          ]);
+          console.log(`🏆 [!win] Dijalankan oleh ${data.nickname}`);
+      } else if (/^[A-Z]{5}$/.test(textUpper)) { // [DIUBAH] Kondisi '&& isFollower' dihapus
+        // [DIUBAH] Menangani tebakan 5 huruf DARI SIAPA SAJA
         io.emit("tiktokBatch", [
           {
             type: "guess",
             guess: textUpper,
-            follower: isFollower,
+            // follower: isFollower, // [DIHAPUS]
             ...userData,
           },
         ]);
         console.log(`💬 [Tebakan] ${data.nickname}: ${textUpper}`);
-      } else if (/^[A-Z]{5}$/.test(textUpper)) {
-        console.log(`💬 [Tebakan Non-Follower Diabaikan] ${data.nickname}: ${textUpper}`);
+      } else { // [DIUBAH] Blok 'else if' kedua dihapus karena sudah dicakup oleh 'else if' di atas
         // [BARU] Kirim obrolan biasa agar muncul di chatbox
         io.emit("tiktokBatch", [
           {
@@ -197,3 +198,4 @@ app.get("/", (req, res) => {
 server.listen(PORT, () =>
   console.log(`🚀 Server berjalan di port ${PORT}`)
 );
+
